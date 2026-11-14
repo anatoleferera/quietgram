@@ -1,0 +1,32 @@
+name: Quietgram
+options:
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  Quietgram:
+    type: application
+    platform: iOS
+    sources:
+      - path: QuietgramApp.swift
+      - path: WebViewController.swift
+      - path: filter.js
+        buildPhase: resources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Quietgram
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: Used when you take a photo or video to upload to Instagram.
+        NSMicrophoneUsageDescription: Used when you record video or voice messages on Instagram.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.anatole.quietgram
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGNING_ALLOWED: NO

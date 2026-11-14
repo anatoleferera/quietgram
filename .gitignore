@@ -1,0 +1,7 @@
+*.xcodeproj
+build/
+Payload/
+*.ipa
+Quietgram/Info.plist
+node_modules/
+.DS_Store
