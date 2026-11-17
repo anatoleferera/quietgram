@@ -22,6 +22,8 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default() // keeps you logged in between launches
         config.allowsInlineMediaPlayback = true
+        // Let videos start with sound without a tap on each one (filter.js remembers the choice).
+        config.mediaTypesRequiringUserActionForPlayback = []
         // Present as mobile Safari so Instagram serves its full mobile site.
         config.applicationNameForUserAgent = "Version/17.5 Mobile/15E148 Safari/604.1"
 
@@ -36,7 +38,6 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
-        webView.isOpaque = false
         webView.backgroundColor = .systemBackground
         webView.scrollView.backgroundColor = .systemBackground
         if #available(iOS 16.4, *) {

@@ -19,7 +19,11 @@
     hideSponsored: true,          // feed ads
     hideSuggestedAccounts: true,  // "Suggested for you" account carousels in the feed
     hideAfterCaughtUp: true,      // everything below "You're all caught up"
-    hideOpenAppButtons: true      // "Open app" / "Use the app" prompts
+    endFeedWhenOnlyHidden: true,  // stop the feed once everything left in it is filtered out
+    hideOpenAppButtons: true,     // "Open app" / "Use the app" prompts
+    rememberSound: true,          // unmute (or mute) once and every later video follows, until the app is closed
+    startUnmuted: false,          // true = videos play with sound from the moment the app opens
+    debug: false                  // show the current address and route in a small label
   };
 
   // Labels are matched exactly (case-insensitive) against visible text.
@@ -40,7 +44,13 @@
   // ---------------------------------------------------------------- styles
 
   var css = ['[' + HIDE + ']{display:none!important}',
-             'html[' + ROUTE + '="blocked"] body{visibility:hidden!important}'];
+             '#qg-debug{position:fixed;top:0;left:0;z-index:2147483647;font:10px monospace;' +
+             'background:#000;color:#0f0;padding:2px 4px;pointer-events:none;opacity:.8}',
+             'html[' + ROUTE + '="blocked"] body{visibility:hidden!important}',
+             'main[data-qg-end]{position:relative!important;overflow:hidden!important}',
+             'main[data-qg-end]::after{content:"End of your feed \\2014  pull down to refresh";' +
+             'position:absolute;left:0;right:0;bottom:0;height:110px;display:flex;align-items:center;' +
+             'justify-content:center;font:14px -apple-system,sans-serif;color:#8e8e8e}'];
   if (CONFIG.blockReelsTab) {
     css.push('a[href="/reels/"]{display:none!important}');
   }
@@ -88,6 +98,27 @@
     return out;
   }
 
+  /** One walk over `root`, sorting exact label matches into groups: {name: [elements]}. */
+  function collect(root, groups) {
+    var out = {};
+    var names = Object.keys(groups);
+    var i;
+    for (i = 0; i < names.length; i++) out[names[i]] = [];
+    if (!root) return out;
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    var node;
+    while ((node = walker.nextNode())) {
+      var value = node.nodeValue;
+      if (!value || value.length > 60 || !node.parentElement) continue;
+      var text = norm(value);
+      if (!text) continue;
+      for (i = 0; i < names.length; i++) {
+        if (groups[names[i]].indexOf(text) !== -1) out[names[i]].push(node.parentElement);
+      }
+    }
+    return out;
+  }
+
   function hide(el) {
     if (el && !el.hasAttribute(HIDE)) el.setAttribute(HIDE, '');
   }
@@ -95,6 +126,12 @@
   function clearHidden() {
     var marked = document.querySelectorAll('[' + HIDE + ']');
     for (var i = 0; i < marked.length; i++) marked[i].removeAttribute(HIDE);
+    var capped = document.querySelector('main[data-qg-end]');
+    if (capped) {
+      capped.removeAttribute('data-qg-end');
+      capped.style.removeProperty('max-height');
+    }
+    lastShownBottom = 0;
   }
 
   function holdsArticle(el) {
@@ -139,6 +176,9 @@
   var reelId = null;
   var reelOrigin = '/';
   var bouncing = false;
+  var routeChangedAt = Date.now();
+  var checked = new WeakMap(); // article -> number of times inspected
+  var lastShownBottom = 0;     // page position of the bottom of the lowest post we let through
 
   function bounce(to) {
     bouncing = true;
@@ -174,7 +214,10 @@
     }
 
     if (document.documentElement) document.documentElement.setAttribute(ROUTE, kind);
+    routeChangedAt = Date.now();
+    checked = new WeakMap();
     clearHidden();
+    setTouchGuard(CONFIG.lockSingleReels && (isReelKind(kind) || kind === 'direct'));
     schedule();
   }
 
@@ -219,36 +262,67 @@
     var main = document.querySelector('main') || document.body;
     var i;
 
+    // Posts fill in over a few moments, so look at each one a handful of times, then leave it alone.
     var articles = main.querySelectorAll('article');
     for (i = 0; i < articles.length; i++) {
       var article = articles[i];
       if (article.hasAttribute(HIDE)) continue;
-      if (CONFIG.hideSponsored && findByText(article, T.sponsored).length) { hide(article); continue; }
-      if (CONFIG.hideSuggestedPosts && findByText(article, T.suggested).length) { hide(article); continue; }
+      var seen = checked.get(article) || 0;
+      if (seen >= 6) continue;
+      checked.set(article, seen + 1);
+      var found = collect(article, { sponsored: T.sponsored, suggested: T.suggested });
+      if (CONFIG.hideSponsored && found.sponsored.length) { hide(article); continue; }
+      if (CONFIG.hideSuggestedPosts && found.suggested.length) { hide(article); continue; }
       if (CONFIG.hideUnfollowedPosts && hasFollowButton(article)) { hide(article); continue; }
     }
 
+    var labels = collect(main, { suggested: T.suggested, caughtUp: T.caughtUp });
+
     if (CONFIG.hideSuggestedAccounts) {
-      var labels = findByText(main, T.suggested);
-      for (i = 0; i < labels.length; i++) {
-        if (labels[i].closest('article')) continue;
-        hide(feedItem(labels[i], main));
+      for (i = 0; i < labels.suggested.length; i++) {
+        if (labels.suggested[i].closest('article')) continue;
+        hide(feedItem(labels.suggested[i], main));
       }
     }
 
-    if (CONFIG.hideAfterCaughtUp) {
-      var marks = findByText(main, T.caughtUp);
-      if (marks.length) {
-        // Hide every row after the marker, including the "load more" trigger,
-        // so Instagram stops fetching suggested posts in the background.
-        var node = feedItem(marks[0], main);
-        while (node && node !== main) {
-          var next = node.nextElementSibling;
-          while (next) { hide(next); next = next.nextElementSibling; }
-          node = node.parentElement;
-        }
+    if (CONFIG.hideAfterCaughtUp && labels.caughtUp.length) {
+      // Hide every row after the marker, including the "load more" trigger,
+      // so Instagram stops fetching suggested posts in the background.
+      var node = feedItem(labels.caughtUp[0], main);
+      while (node && node !== main) {
+        var next = node.nextElementSibling;
+        while (next) { hide(next); next = next.nextElementSibling; }
+        node = node.parentElement;
       }
     }
+
+    endFeed(main, articles);
+  }
+
+  /**
+   * Instagram keeps a filtered-out post's space reserved and keeps loading more, so once only
+   * filtered posts remain the feed turns into an endless blank page. Cut it off after the last
+   * post that was shown.
+   */
+  function endFeed(main, articles) {
+    if (!CONFIG.endFeedWhenOnlyHidden || main.tagName !== 'MAIN') return;
+    var scrollTop = window.pageYOffset || 0;
+    var trailing = 0;
+    var counting = true;
+    for (var i = articles.length - 1; i >= 0; i--) {
+      if (articles[i].closest('[' + HIDE + ']')) {
+        if (counting) trailing++;
+      } else {
+        counting = false;
+        var bottom = articles[i].getBoundingClientRect().bottom + scrollTop;
+        if (bottom > lastShownBottom) lastShownBottom = bottom;
+      }
+    }
+    if (main.hasAttribute('data-qg-end') || trailing < 4) return;
+    var mainTop = main.getBoundingClientRect().top + scrollTop;
+    var height = Math.max(lastShownBottom - mainTop, 0) + 110;
+    main.style.setProperty('max-height', Math.round(height) + 'px', 'important');
+    main.setAttribute('data-qg-end', '');
   }
 
   function scanExplore() {
@@ -268,10 +342,193 @@
 
   function hideOpenAppButtons() {
     if (!CONFIG.hideOpenAppButtons) return;
+    if (Date.now() - routeChangedAt > 15000) return; // these prompts appear early; stop looking after that
     var hits = findByText(document.body, T.openApp);
     for (var i = 0; i < hits.length; i++) {
       hide(hits[i].closest('a, button, [role="button"]') || hits[i]);
     }
+  }
+
+  // -------------------------------------------------------------- reel lock
+  // A reel opened from a DM (or a profile) should be one video, not a doorway into the Reels feed.
+  // Three independent guards: the address check in onRoute, hiding the next videos in the
+  // viewer, and refusing vertical swipes on the video itself.
+
+  function currentKind() {
+    return document.documentElement ? document.documentElement.getAttribute(ROUTE) : null;
+  }
+
+  /** The large video on screen, if there is one. */
+  function mainVideo() {
+    var videos = document.querySelectorAll('video');
+    var vh = window.innerHeight || 1;
+    var best = null;
+    var bestVisible = 0;
+    for (var i = 0; i < videos.length; i++) {
+      var r = videos[i].getBoundingClientRect();
+      if (r.height < vh * 0.6) continue;
+      var visible = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+      if (visible > bestVisible) { bestVisible = visible; best = videos[i]; }
+    }
+    return best;
+  }
+
+  /** The largest wrapper around a video that is still about one screen tall: one reel. */
+  function slideOf(video) {
+    var vh = window.innerHeight || 1;
+    var node = video;
+    while (node.parentElement && node.parentElement !== document.body) {
+      if (node.parentElement.getBoundingClientRect().height > vh * 1.15) break;
+      node = node.parentElement;
+    }
+    return node;
+  }
+
+  function lockTarget() {
+    if (!CONFIG.lockSingleReels) return null;
+    var kind = currentKind();
+    if (!isReelKind(kind) && kind !== 'direct') return null;
+    var video = mainVideo();
+    return video ? { video: video, slide: slideOf(video) } : null;
+  }
+
+  function hideNextReels() {
+    var target = lockTarget();
+    if (!target) return;
+    var next = target.slide.nextElementSibling;
+    while (next) {
+      if (next.tagName === 'VIDEO' || next.querySelector('video')) hide(next);
+      next = next.nextElementSibling;
+    }
+  }
+
+  /** True when the touch is inside something scrollable that isn't the reel list (e.g. comments). */
+  function inOwnScroller(el, target) {
+    var node = el;
+    while (node && node !== target.slide && node !== document.body) {
+      if (node.scrollHeight > node.clientHeight + 4 && !node.contains(target.video)) {
+        var overflow = getComputedStyle(node).overflowY;
+        if (overflow === 'auto' || overflow === 'scroll') return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  var touch = { block: false, x: 0, y: 0, swiped: false };
+
+  function onTouchStart(e) {
+    touch.block = false;
+    touch.swiped = false;
+    var target = lockTarget();
+    if (!target || !e.touches || !e.touches.length) return;
+    if (!target.slide.contains(e.target) || inOwnScroller(e.target, target)) return;
+    touch.block = true;
+    touch.x = e.touches[0].clientX;
+    touch.y = e.touches[0].clientY;
+  }
+
+  function onTouchMove(e) {
+    if (!touch.block || !e.touches || !e.touches.length) return;
+    var dx = Math.abs(e.touches[0].clientX - touch.x);
+    var dy = Math.abs(e.touches[0].clientY - touch.y);
+    if (dy > dx && dy > 6) touch.swiped = true;
+    if (touch.swiped) {
+      if (e.cancelable) e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }
+
+  function onTouchEnd(e) {
+    if (touch.block && touch.swiped) {
+      if (e.cancelable) e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+    touch.block = false;
+  }
+
+  // Only listen while a reel could be open: these listeners make scrolling wait on script.
+  var guardOn = false;
+  function setTouchGuard(on) {
+    if (on === guardOn) return;
+    guardOn = on;
+    var method = on ? 'addEventListener' : 'removeEventListener';
+    var opts = { capture: true, passive: false };
+    window[method]('touchstart', onTouchStart, opts);
+    window[method]('touchmove', onTouchMove, opts);
+    window[method]('touchend', onTouchEnd, opts);
+  }
+
+  // ------------------------------------------------------------------ sound
+  // Instagram's mobile site mutes every video separately. Remember the last choice instead:
+  // the first tap that changes sound sets it for every video until the app is closed.
+
+  var soundPref = CONFIG.startUnmuted ? false : null; // null = follow Instagram until the first tap
+  var nativeMuted = null;
+
+  function setupSound() {
+    if (!CONFIG.rememberSound || typeof HTMLMediaElement === 'undefined') return;
+    var desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'muted');
+    if (!desc || !desc.set || !desc.get || !desc.configurable) return;
+    nativeMuted = desc;
+    var armedUntil = 0;
+
+    function applyAll() {
+      var videos = document.querySelectorAll('video');
+      for (var i = 0; i < videos.length; i++) desc.set.call(videos[i], soundPref);
+    }
+
+    // A tap on or next to a video may be the sound button.
+    window.addEventListener('click', function (e) {
+      var node = e.target;
+      for (var depth = 0; node && depth < 8; depth++) {
+        if (node.tagName === 'VIDEO') { armedUntil = Date.now() + 600; return; }
+        var inside = node.querySelectorAll ? node.querySelectorAll('video').length : 0;
+        if (inside === 1) { armedUntil = Date.now() + 600; return; } // one post or one reel
+        if (inside > 1) return;                                      // a whole feed: not a sound button
+        node = node.parentElement;
+      }
+    }, true);
+
+    Object.defineProperty(HTMLMediaElement.prototype, 'muted', {
+      configurable: true,
+      enumerable: desc.enumerable,
+      get: function () { return desc.get.call(this); },
+      set: function (value) {
+        value = !!value;
+        if (this.tagName !== 'VIDEO') return desc.set.call(this, value);
+        if (Date.now() < armedUntil) {
+          // Instagram changed sound right after a tap: that is you pressing the button.
+          armedUntil = 0;
+          soundPref = soundPref === null ? value : !soundPref;
+          applyAll();
+          return;
+        }
+        desc.set.call(this, soundPref === null ? value : soundPref);
+      }
+    });
+
+    // Videos that arrive already muted in their markup never pass through the setter.
+    document.addEventListener('play', function (e) {
+      var el = e.target;
+      if (soundPref === null || !el || el.tagName !== 'VIDEO') return;
+      if (desc.get.call(el) !== soundPref) desc.set.call(el, soundPref);
+    }, true);
+  }
+
+  // ------------------------------------------------------------------ debug
+
+  function updateDebug() {
+    if (!CONFIG.debug || !document.body) return;
+    var badge = document.getElementById('qg-debug');
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.id = 'qg-debug';
+      document.body.appendChild(badge);
+    }
+    var text = location.pathname + ' | ' + currentKind() + ' | lock:' + (lockTarget() ? 'yes' : 'no') +
+               ' | sound:' + (soundPref === null ? 'ig' : soundPref ? 'muted' : 'on');
+    if (badge.textContent !== text) badge.textContent = text;
   }
 
   function scan() {
@@ -281,14 +538,16 @@
     try { collapseNavLinks(); } catch (e) {}
     try { if (kind === 'home') scanFeed(); } catch (e) {}
     try { if (kind === 'explore') scanExplore(); } catch (e) {}
+    try { hideNextReels(); } catch (e) {}
     try { hideOpenAppButtons(); } catch (e) {}
+    try { updateDebug(); } catch (e) {}
   }
 
   var pending = false;
   function schedule() {
     if (pending) return;
     pending = true;
-    setTimeout(function () { pending = false; scan(); }, 150);
+    setTimeout(function () { pending = false; scan(); }, 350);
   }
 
   // ------------------------------------------------------------------ start
@@ -296,10 +555,12 @@
   function start() {
     if (!document.documentElement) return setTimeout(start, 10);
     injectStyle();
+    try { setupSound(); } catch (e) {}
     onRoute();
     new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
   }
 
-  window.__quietgramTest = { classify: classify, scan: scan, onRoute: onRoute };
+  window.__quietgramTest = { classify: classify, scan: scan, onRoute: onRoute,
+                             sound: function () { return soundPref; } };
   start();
 })();
