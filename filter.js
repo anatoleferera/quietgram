@@ -18,12 +18,13 @@
     hideUnfollowedPosts: true,    // feed posts that carry a Follow button (accounts you don't follow)
     hideSponsored: true,          // feed ads
     hideSuggestedAccounts: true,  // "Suggested for you" account carousels in the feed
-    hideAfterCaughtUp: true,      // everything below "You're all caught up"
+    hideAfterCaughtUp: false,     // everything below "You're all caught up" (off: it also removes older posts from people you follow)
     endFeedWhenOnlyHidden: true,  // stop the feed once everything left in it is filtered out
     hideOpenAppButtons: true,     // "Open app" / "Use the app" prompts
     rememberSound: true,          // unmute (or mute) once and every later video follows, until the app is closed
     startUnmuted: false,          // true = videos play with sound from the moment the app opens
-    debug: false                  // show the current address and route in a small label
+    debug: false,                 // show the current address and route in a small label
+    diagnostics: true             // small "QG" button: copy a report for troubleshooting, or switch filters off to compare
   };
 
   // Labels are matched exactly (case-insensitive) against visible text.
@@ -39,6 +40,8 @@
   };
 
   var HIDE = 'data-qg-hide';
+  var filtersOff = false;
+  try { filtersOff = localStorage.getItem('qg-off') === '1'; } catch (e) {}
   var ROUTE = 'data-qg-route';
 
   // ---------------------------------------------------------------- styles
@@ -51,9 +54,15 @@
              'main[data-qg-end]::after{content:"End of your feed \\2014  pull down to refresh";' +
              'position:absolute;left:0;right:0;bottom:0;height:110px;display:flex;align-items:center;' +
              'justify-content:center;font:14px -apple-system,sans-serif;color:#8e8e8e}'];
-  if (CONFIG.blockReelsTab) {
+  if (CONFIG.blockReelsTab && !filtersOff) {
     css.push('a[href="/reels/"]{display:none!important}');
   }
+  css.push('#qg-diag{position:fixed;left:8px;bottom:84px;z-index:2147483647;font:12px -apple-system,sans-serif}' +
+           '#qg-diag>button{border:0;border-radius:14px;padding:6px 9px;background:rgba(0,0,0,.55);color:#fff;font:inherit}' +
+           '#qg-diag .qg-menu{display:none;margin-bottom:6px;background:#222;border-radius:10px;padding:4px}' +
+           '#qg-diag.open .qg-menu{display:block}' +
+           '#qg-diag .qg-menu button{display:block;width:100%;text-align:left;border:0;background:none;color:#fff;' +
+           'font:inherit;padding:9px 12px}');
   if (CONFIG.blockExploreGrid) {
     css.push('html[' + ROUTE + '="explore"] main a[href^="/p/"],' +
              'html[' + ROUTE + '="explore"] main a[href^="/reel/"],' +
@@ -119,8 +128,18 @@
     return out;
   }
 
-  function hide(el) {
-    if (el && !el.hasAttribute(HIDE)) el.setAttribute(HIDE, '');
+  function hide(el, reason) {
+    if (el && !el.hasAttribute(HIDE)) el.setAttribute(HIDE, reason || 'x');
+  }
+
+  /** Hide a feed row only if it holds no post we decided to keep. */
+  function hideRow(el, reason) {
+    if (!el) return;
+    var posts = el.tagName === 'ARTICLE' ? [el] : el.querySelectorAll('article');
+    for (var i = 0; i < posts.length; i++) {
+      if (!posts[i].closest('[' + HIDE + ']')) return;
+    }
+    hide(el, reason);
   }
 
   function clearHidden() {
@@ -187,7 +206,12 @@
   }
 
   function onRoute() {
-    if (bouncing) return;
+    if (bouncing || filtersOff) {
+      if (filtersOff && document.documentElement) {
+        document.documentElement.setAttribute(ROUTE, classify(location.pathname));
+      }
+      return;
+    }
     var path = location.pathname;
     if (path === lastPath) return;
 
@@ -245,7 +269,7 @@
              node.parentElement.children.length === 1) {
         node = node.parentElement;
       }
-      hide(node);
+      hide(node, 'reels-tab');
     }
   }
 
@@ -271,9 +295,9 @@
       if (seen >= 6) continue;
       checked.set(article, seen + 1);
       var found = collect(article, { sponsored: T.sponsored, suggested: T.suggested });
-      if (CONFIG.hideSponsored && found.sponsored.length) { hide(article); continue; }
-      if (CONFIG.hideSuggestedPosts && found.suggested.length) { hide(article); continue; }
-      if (CONFIG.hideUnfollowedPosts && hasFollowButton(article)) { hide(article); continue; }
+      if (CONFIG.hideSponsored && found.sponsored.length) { hide(article, 'ad'); continue; }
+      if (CONFIG.hideSuggestedPosts && found.suggested.length) { hide(article, 'suggested-post'); continue; }
+      if (CONFIG.hideUnfollowedPosts && hasFollowButton(article)) { hide(article, 'not-followed'); continue; }
     }
 
     var labels = collect(main, { suggested: T.suggested, caughtUp: T.caughtUp });
@@ -281,7 +305,7 @@
     if (CONFIG.hideSuggestedAccounts) {
       for (i = 0; i < labels.suggested.length; i++) {
         if (labels.suggested[i].closest('article')) continue;
-        hide(feedItem(labels.suggested[i], main));
+        hideRow(feedItem(labels.suggested[i], main), 'suggested-accounts');
       }
     }
 
@@ -291,7 +315,7 @@
       var node = feedItem(labels.caughtUp[0], main);
       while (node && node !== main) {
         var next = node.nextElementSibling;
-        while (next) { hide(next); next = next.nextElementSibling; }
+        while (next) { hide(next, 'after-caught-up'); next = next.nextElementSibling; }
         node = node.parentElement;
       }
     }
@@ -337,7 +361,7 @@
            !node.parentElement.querySelector('input')) {
       node = node.parentElement;
     }
-    if (!node.querySelector('input')) hide(node);
+    if (!node.querySelector('input')) hide(node, 'explore-grid');
   }
 
   function hideOpenAppButtons() {
@@ -345,7 +369,7 @@
     if (Date.now() - routeChangedAt > 15000) return; // these prompts appear early; stop looking after that
     var hits = findByText(document.body, T.openApp);
     for (var i = 0; i < hits.length; i++) {
-      hide(hits[i].closest('a, button, [role="button"]') || hits[i]);
+      hide(hits[i].closest('a, button, [role="button"]') || hits[i], 'open-app');
     }
   }
 
@@ -397,7 +421,7 @@
     if (!target) return;
     var next = target.slide.nextElementSibling;
     while (next) {
-      if (next.tagName === 'VIDEO' || next.querySelector('video')) hide(next);
+      if (next.tagName === 'VIDEO' || next.querySelector('video')) hide(next, 'next-reel');
       next = next.nextElementSibling;
     }
   }
@@ -531,9 +555,121 @@
     if (badge.textContent !== text) badge.textContent = text;
   }
 
+  // ------------------------------------------------------------ diagnostics
+  // A "QG" button that copies a description of the page (structure, sizes, what was hidden and
+  // why) so problems can be diagnosed without a Mac, and a switch to turn every filter off.
+
+  function describe(el) {
+    var d = el.tagName.toLowerCase();
+    var role = el.getAttribute('role');
+    if (role) d += '[' + role + ']';
+    var href = el.getAttribute('href');
+    if (href) d += '{' + href.slice(0, 30) + '}';
+    var r = el.getBoundingClientRect();
+    d += ' h' + Math.round(r.height) + ' y' + Math.round(r.top + (window.pageYOffset || 0));
+    var cs = getComputedStyle(el);
+    if (cs.position !== 'static') d += ' pos:' + cs.position;
+    if (cs.transform && cs.transform !== 'none') d += ' tf';
+    if (el.style.height || el.style.minHeight || el.style.paddingTop || el.style.paddingBottom) {
+      d += ' inline:' + (el.getAttribute('style') || '').replace(/\s+/g, '').slice(0, 60);
+    }
+    var hidden = el.getAttribute(HIDE);
+    if (hidden) d += ' HIDDEN:' + hidden;
+    var own = '';
+    for (var c = el.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) own += c.nodeValue;
+    }
+    own = own.replace(/\s+/g, ' ').trim();
+    if (own) d += ' "' + own.slice(0, 24) + '"';
+    return d;
+  }
+
+  function outline(root, maxLines) {
+    var lines = [];
+    (function walk(el, depth) {
+      if (lines.length >= maxLines) return;
+      if (el.id === 'qg-diag' || el.tagName === 'SCRIPT' || el.tagName === 'STYLE' ||
+          el.tagName === 'svg' || el.tagName === 'SVG' || el.tagName === 'path') return;
+      var kids = el.children;
+      // Collapse long chains of single-child wrappers.
+      var chain = 0;
+      while (kids.length === 1 && !el.getAttribute(HIDE) && el.tagName !== 'ARTICLE' && chain < 20) {
+        el = kids[0];
+        kids = el.children;
+        chain++;
+      }
+      lines.push(new Array(depth + 1).join(' ') + (chain ? '(' + chain + ')' : '') + describe(el));
+      if (el.tagName === 'ARTICLE' || el.getAttribute(HIDE)) return; // don't expand posts
+      for (var i = 0; i < kids.length; i++) walk(kids[i], depth + 1);
+    })(root, 0);
+    return lines;
+  }
+
+  function report() {
+    var main = document.querySelector('main');
+    var counts = {};
+    var marked = document.querySelectorAll('[' + HIDE + ']');
+    for (var i = 0; i < marked.length; i++) {
+      var k = marked[i].getAttribute(HIDE);
+      counts[k] = (counts[k] || 0) + 1;
+    }
+    var se = document.scrollingElement || document.documentElement;
+    var head = [
+      'Quietgram report',
+      'path ' + location.pathname + ' route ' + currentKind() + ' filters ' + (filtersOff ? 'OFF' : 'on'),
+      'viewport ' + window.innerWidth + 'x' + window.innerHeight + ' scrollY ' + Math.round(window.pageYOffset || 0) +
+        ' pageHeight ' + se.scrollHeight,
+      'articles ' + document.querySelectorAll('article').length + ' hidden ' + JSON.stringify(counts),
+      'main ' + (main ? 'h' + Math.round(main.getBoundingClientRect().height) +
+        (main.hasAttribute('data-qg-end') ? ' END-CAPPED' : '') : 'missing'),
+      '---'
+    ];
+    return head.concat(outline(main || document.body, 260)).join('\n');
+  }
+
+  function copyText(text) {
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.qgCopy) {
+        window.webkit.messageHandlers.qgCopy.postMessage(text);
+        return true;
+      }
+    } catch (e) {}
+    try { navigator.clipboard.writeText(text); return true; } catch (e) {}
+    return false;
+  }
+
+  function setupDiagnostics() {
+    if (!CONFIG.diagnostics || !document.body || document.getElementById('qg-diag')) return;
+    var box = document.createElement('div');
+    box.id = 'qg-diag';
+    box.innerHTML = '<div class="qg-menu">' +
+      '<button data-a="copy">Copy report</button>' +
+      '<button data-a="off">' + (filtersOff ? 'Turn filters back on' : 'Turn filters off (test)') + '</button>' +
+      '<button data-a="close">Close</button></div>' +
+      '<button data-a="toggle">QG' + (filtersOff ? ' (off)' : '') + '</button>';
+    box.addEventListener('click', function (e) {
+      var a = e.target && e.target.getAttribute && e.target.getAttribute('data-a');
+      if (!a) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (a === 'toggle') box.classList.toggle('open');
+      if (a === 'close') box.classList.remove('open');
+      if (a === 'copy') {
+        e.target.textContent = copyText(report()) ? 'Copied. Paste it to Claude' : 'Copy failed';
+      }
+      if (a === 'off') {
+        try { localStorage.setItem('qg-off', filtersOff ? '0' : '1'); } catch (err) {}
+        location.reload();
+      }
+    }, true);
+    document.body.appendChild(box);
+  }
+
   function scan() {
     if (bouncing || !document.body) return;
     injectStyle();
+    try { setupDiagnostics(); } catch (e) {}
+    if (filtersOff) return;
     var kind = document.documentElement.getAttribute(ROUTE);
     try { collapseNavLinks(); } catch (e) {}
     try { if (kind === 'home') scanFeed(); } catch (e) {}
@@ -555,12 +691,12 @@
   function start() {
     if (!document.documentElement) return setTimeout(start, 10);
     injectStyle();
-    try { setupSound(); } catch (e) {}
+    if (!filtersOff) { try { setupSound(); } catch (e) {} }
     onRoute();
     new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
   }
 
   window.__quietgramTest = { classify: classify, scan: scan, onRoute: onRoute,
-                             sound: function () { return soundPref; } };
+                             sound: function () { return soundPref; }, report: report };
   start();
 })();

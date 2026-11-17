@@ -33,6 +33,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
             forMainFrameOnly: true
         )
         config.userContentController.addUserScript(script)
+        config.userContentController.add(CopyHandler(), name: "qgCopy")
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -165,5 +166,15 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
         alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
         present(alert, animated: true)
+    }
+}
+
+/// Receives the diagnostics report from filter.js and puts it on the clipboard.
+private final class CopyHandler: NSObject, WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        if let text = message.body as? String {
+            UIPasteboard.general.string = text
+        }
     }
 }
